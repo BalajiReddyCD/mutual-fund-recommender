@@ -221,3 +221,4 @@ data/processed/
 # ✅ Notebook output artifacts (optional)
 *.out
 *.tmp
+outputs/
