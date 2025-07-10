@@ -1,132 +1,192 @@
-# app.py – Streamlit Dashboard for Mutual Fund Forecasting and Recommendation
-
-import sys
+# app(streamlit_dashboard).py
 import os
-
-# Add src folder to sys.path (absolute import fix)
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-
-import api  # this should now work
-
-import streamlit as st
+import glob
 import pandas as pd
-import os
-import plotly.express as px
+import streamlit as st
 import plotly.graph_objects as go
-from datetime import datetime
 
+st.set_page_config(page_title="Mutual Fund Forecast Dashboard", layout="wide")
 
-# Set Streamlit page configuration
-st.set_page_config(page_title="Mutual Fund Forecast Comparison", layout="wide")
-st.title(" Mutual Fund Forecast Model Comparison Dashboard")
+# Load leaderboard and prediction files
+def load_leaderboard():
+    return pd.read_csv("outputs/models/model_leaderboard.csv")
 
-# Enable dark theme and highlight headers
-st.markdown("""
-    <style>
-    body {
-        color: white;
-        background-color: #0E1117;
-    }
-    .stApp {
-        background-color: #0E1117;
-    }
-    .css-1d391kg, .css-1kyxreq {
-        background-color: #1C1F26;
-    }
-    h1, h2, h3, h4 {
-        color: #00B4D8;
-    }
-    .stSelectbox > div, .stMultiselect > div {
-        background-color: #1C1F26;
-        color: white;
-    }
-    </style>
-""", unsafe_allow_html=True)
+def find_latest_file(model_name, scheme_code):
+    pattern = f"outputs/models/{model_name}_preds_{scheme_code}_*.csv"
+    files = glob.glob(pattern)
+    if not files:
+        print(f"[DEBUG] No files found for {model_name}, Scheme {scheme_code}")
+        return None
+    files.sort(reverse=True)
+    return files[0]
 
-# Load leaderboard
-leaderboard_df = api.load_leaderboard()
-if leaderboard_df is not None:
-    st.subheader(" Model Leaderboard")
+def load_predictions(model_name, scheme_code):
+    file_path = find_latest_file(model_name, scheme_code)
+    if file_path:
+        df = pd.read_csv(file_path)
+        df["Date"] = pd.to_datetime(df["Date"])
+        return df
+    else:
+        return pd.DataFrame()
 
-    scheme_codes = api.get_scheme_codes(leaderboard_df)
-    default_scheme = str(api.get_best_scheme_code(leaderboard_df))
-    all_option = "All"
-    scheme_filter = st.selectbox(" Select Scheme Code (Best by default or choose any)",
-                                 options=[default_scheme] + [s for s in scheme_codes if s != default_scheme] + [all_option],
-                                 index=0)
+def get_recommendations(leaderboard_path="outputs/models/model_leaderboard.csv", min_accuracy=85, max_rmse=0.5):
+    df = pd.read_csv(leaderboard_path)
+    grouped = df.groupby("Scheme_Code").agg({
+        "Accuracy (%)": "mean",
+        "RMSE": "mean",
+        "Model": "nunique"
+    }).rename(columns={"Model": "Model_Count"})
 
-    model_filter = st.multiselect(" Select Models to Compare",
-                                  options=api.get_model_list(leaderboard_df),
-                                  default=None)
+    recommended = grouped[
+        (grouped["Accuracy (%)"] >= min_accuracy) &
+        (grouped["RMSE"] <= max_rmse) &
+        (grouped["Model_Count"] == 3)
+    ].sort_values(by="Accuracy (%)", ascending=False)
 
-    filtered_df = api.filter_leaderboard(leaderboard_df, scheme_code=scheme_filter, model_names=model_filter)
+    return recommended.reset_index()
 
-    # Summary cards for best models
-    st.markdown("### Top Performing Models")
-    top_models = leaderboard_df.sort_values("RMSE").head(3)
-    for _, row in top_models.iterrows():
-        st.info(f"**{row['Model']}** (Scheme: {row['Scheme_Code']}) → RMSE: {row['RMSE']} | MAE: {row['MAE']} | R²: {row['R2']}")
+# Sidebar filters
+st.sidebar.header("Model Selection")
+leaderboard = load_leaderboard()
 
-    # Monthly NAV summaries
-    if not filtered_df.empty:
-        for _, row in filtered_df.iterrows():
-            nav_df = api.load_predictions(str(row['Scheme_Code']), row['Model'])
-            if nav_df is not None:
-                nav_summary = api.get_monthly_nav_summary(nav_df)
-                st.markdown(f"### Monthly NAV Summary ({row['Model']} - {row['Scheme_Code']})")
-                st.dataframe(nav_summary, use_container_width=True)
+model_options = ["All"] + sorted(leaderboard['Model'].unique().tolist())
+model = st.sidebar.selectbox("Select Model", model_options)
 
-    st.dataframe(filtered_df.sort_values("RMSE").reset_index(drop=True), use_container_width=True)
+scheme_options = ["All"] + sorted(leaderboard['Scheme_Code'].astype(str).unique().tolist())
+scheme = st.sidebar.selectbox("Select Scheme Code", scheme_options)
 
-    st.download_button(
-        label=" Download Leaderboard CSV",
-        data=filtered_df.to_csv(index=False).encode('utf-8'),
-        file_name="filtered_model_leaderboard.csv",
-        mime="text/csv"
+metric = st.sidebar.selectbox("Metric to Filter", ["MAE", "RMSE", "R2", "Accuracy (%)"])
+threshold = st.sidebar.slider("Minimum Accuracy (%)", 0, 100, 80)
+
+# Filter leaderboard
+filtered_df = leaderboard.copy()
+if model != "All":
+    filtered_df = filtered_df[filtered_df['Model'] == model]
+
+if scheme != "All":
+    filtered_df = filtered_df[filtered_df['Scheme_Code'].astype(str) == scheme]
+
+filtered_df = filtered_df[filtered_df['Accuracy (%)'] >= threshold]
+
+# Select top scheme per model (if model == All)
+top_schemes_per_model = (
+    filtered_df.loc[filtered_df.groupby("Model")["Accuracy (%)"].idxmax()]
+    if model == "All" else filtered_df
+)
+
+# Tabs layout
+tabs = st.tabs([
+    "Leaderboard", 
+    "Forecast Overlay", 
+    "Model Comparison", 
+    "Stationarity Check",
+    "Recommendations"
+])
+
+# Tab 1: Leaderboard
+with tabs[0]:
+    st.subheader("Filtered Leaderboard (Top Scheme per Model)")
+    st.dataframe(top_schemes_per_model, use_container_width=True)
+
+    fig_bar = go.Figure()
+    for _, row in top_schemes_per_model.iterrows():
+        fig_bar.add_trace(go.Bar(
+            x=[row["Model"]],
+            y=[row[metric]],
+            name=f"{row['Model']} (Scheme {row['Scheme_Code']})",
+            text=[f"{row[metric]}"],
+            hovertext=f"Scheme: {row['Scheme_Code']}<br>{metric}: {row[metric]}",
+            textposition="auto"
+        ))
+
+    fig_bar.update_layout(
+        title="Top Scheme Accuracy Comparison Across Models",
+        xaxis_title="Model",
+        yaxis_title=metric,
+        barmode='group',
+        showlegend=True
     )
-else:
-    st.warning("Leaderboard file not found. Please run the models first.")
+    st.plotly_chart(fig_bar, use_container_width=True)
 
-# Model file prediction viewer
-model_files = api.get_model_prediction_files()
+# Tab 2: Single model forecast overlay
+with tabs[1]:
+    st.subheader("Forecast Visualization")
+    if model != "All" and scheme != "All":
+        df_preds = load_predictions(model, scheme)
 
-if model_files:
-    selected_file = st.selectbox(" Select a Model Prediction File to View", model_files)
-    df = api.load_prediction_file(selected_file)
-    if df is not None:
-        st.subheader(f" Prediction Results from {selected_file}")
+        if not df_preds.empty:
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(x=df_preds['Date'], y=df_preds['Actual_NAV'], name='Actual NAV'))
+            fig.add_trace(go.Scatter(x=df_preds['Date'], y=df_preds['Predicted_NAV'], name='Predicted NAV', line=dict(dash='dash')))
+            if 'Lower_CI' in df_preds.columns and 'Upper_CI' in df_preds.columns:
+                fig.add_trace(go.Scatter(x=df_preds['Date'], y=df_preds['Lower_CI'], fill=None, mode='lines', name='Lower CI'))
+                fig.add_trace(go.Scatter(x=df_preds['Date'], y=df_preds['Upper_CI'], fill='tonexty', mode='lines', name='Upper CI', fillcolor='rgba(0,100,80,0.2)'))
 
-        # Date Range Filter
-        df['Date'] = pd.to_datetime(df['Date'])
-        min_date = df['Date'].min().to_pydatetime()
-        max_date = df['Date'].max().to_pydatetime()
-        date_range = st.slider(" Filter Date Range", min_value=min_date, max_value=max_date, value=(min_date, max_date))
-        df_filtered = df[(df['Date'] >= date_range[0]) & (df['Date'] <= date_range[1])]
+            fig.update_layout(title=f"{model} Forecast with Confidence Interval", xaxis_title="Date", yaxis_title="NAV")
+            st.plotly_chart(fig, use_container_width=True)
 
-        with st.expander(" Raw Prediction Table"):
-            st.dataframe(df_filtered, use_container_width=True)
+            st.download_button("Download Predictions CSV", df_preds.to_csv(index=False).encode(), file_name=f"{model}_predictions_{scheme}.csv")
+        else:
+            st.warning("No predictions found for the selected model and scheme.")
+    else:
+        st.info("Please select both a specific model and scheme code to view forecast overlay.")
 
-        fig = px.line(df_filtered, x='Date', y=["Actual_NAV", "Predicted_NAV"],
-                      title=" Actual vs Predicted NAV", markers=True)
-        fig.update_layout(legend=dict(x=0, y=1), xaxis_title="Date", yaxis_title="NAV")
+# Tab 3: All model forecast comparison
+with tabs[2]:
+    st.subheader(f"Forecast Overlay Comparison for Scheme {scheme}" if scheme != "All" else "Please select a scheme to compare")
+    if scheme != "All":
+        models = ["ARIMA", "LSTM", "Prophet"]
+        overlay_fig = go.Figure()
+
+        for m in models:
+            df = load_predictions(m, scheme)
+            if not df.empty:
+                overlay_fig.add_trace(go.Scatter(x=df['Date'], y=df['Predicted_NAV'], mode='lines', name=f'{m} Forecast'))
+
+        df_actual = load_predictions("ARIMA", scheme)  # Any model with 'Actual_NAV'
+        if not df_actual.empty:
+            overlay_fig.add_trace(go.Scatter(x=df_actual['Date'], y=df_actual['Actual_NAV'], mode='lines', name='Actual NAV', line=dict(color='black', width=2)))
+
+        overlay_fig.update_layout(title=f"Overlay of Forecasts - Scheme {scheme}", xaxis_title="Date", yaxis_title="NAV")
+        st.plotly_chart(overlay_fig, use_container_width=True)
+    else:
+        st.info("Please select a scheme to view model comparisons.")
+
+# Tab 4: Stationarity Plot
+with tabs[3]:
+    st.subheader("ADF Stationarity Check - Top Scheme Codes")
+    try:
+        with open("outputs/models/adf_stationarity_plot.html", "r", encoding="utf-8") as f:
+            html_content = f.read()
+        st.components.v1.html(html_content, height=600)
+    except Exception as e:
+        st.error(f"Error loading ADF plot: {e}")
+
+# Tab 5: Fund Recommendations
+with tabs[4]:
+    st.subheader("Recommended Mutual Funds for Investment")
+    recs_df = get_recommendations()
+
+    if recs_df.empty:
+        st.warning("No funds meet the recommendation criteria. Try lowering accuracy or RMSE threshold.")
+    else:
+        st.dataframe(recs_df, use_container_width=True)
+
+        fig = go.Figure()
+        fig.add_trace(go.Bar(
+            x=recs_df["Scheme_Code"].astype(str),
+            y=recs_df["Accuracy (%)"],
+            name="Avg Accuracy (%)",
+            text=recs_df["Accuracy (%)"],
+            textposition="auto"
+        ))
+        fig.update_layout(
+            title="Recommended Funds by Accuracy",
+            xaxis_title="Scheme Code",
+            yaxis_title="Accuracy (%)"
+        )
         st.plotly_chart(fig, use_container_width=True)
 
-        # Metrics block
-        st.markdown("###  Metrics Insight")
-        try:
-            mae, rmse, r2 = api.calculate_metrics(df_filtered)
-            col1, col2, col3 = st.columns(3)
-            col1.metric("MAE", mae)
-            col2.metric("RMSE", rmse)
-            col3.metric("R²", r2)
-
-            st.download_button(
-                label="📥 Download Predictions CSV",
-                data=df_filtered.to_csv(index=False).encode('utf-8'),
-                file_name=selected_file,
-                mime="text/csv"
-            )
-        except Exception as e:
-            st.warning(f" Error calculating metrics: {e}")
-else:
-    st.info(" No prediction files found. Please generate model predictions to visualize.")
+# Footer
+st.markdown("---")
+st.caption("Smart Mutual Fund Forecasting Dashboard | MSc Data Science Final Project")

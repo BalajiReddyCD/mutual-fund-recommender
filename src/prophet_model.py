@@ -3,120 +3,96 @@
 import os
 import pandas as pd
 import numpy as np
-from prophet import Prophet
 from datetime import datetime
+from prophet import Prophet
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
-import matplotlib.pyplot as plt
-import warnings
+import plotly.graph_objs as go
+import plotly.io as pio
 
-warnings.filterwarnings("ignore")
+pio.renderers.default = "notebook_connected"
 
-# =============================
-# Utility Functions
-# =============================
 def load_data():
     return pd.read_csv("data/processed/preprocessed_mutual_funds.csv")
 
-def select_scheme_code(df, min_records=100):
-    counts = df['Scheme_Code'].value_counts()
-    valid = counts[counts > min_records]
-    if valid.empty:
-        raise ValueError("No Scheme_Code with enough data.")
-    code = valid.index[0]
-    print(f" Using Scheme_Code: {code} with {valid.iloc[0]} entries")
-    return code
+def load_top_scheme_codes():
+    df = pd.read_csv("data/processed/top5_scheme_summary.csv")
+    return df['Scheme_Code'].dropna().unique().tolist()
 
-# =============================
-# Prophet Trainer
-# =============================
-def train_prophet(df, scheme_code):
+def calculate_accuracy(actual, predicted):
+    actual = np.array(actual)
+    predicted = np.array(predicted)
+    mape = np.mean(np.abs((actual - predicted) / actual)) * 100
+    return 100 - mape
+
+def train_prophet(df, scheme_code, output_dir="outputs/models"):
     df = df[df['Scheme_Code'] == scheme_code].copy()
     df['Date'] = pd.to_datetime(df['Date'])
-    df = df.sort_values("Date")
+    df = df.sort_values('Date')
+    series = df.groupby('Date')['NAV'].mean().reset_index()
+    series.rename(columns={'Date': 'ds', 'NAV': 'y'}, inplace=True)
 
-    prophet_df = df[['Date', 'NAV']].rename(columns={'Date': 'ds', 'NAV': 'y'})
+    train_size = int(len(series) * 0.8)
+    train, test = series.iloc[:train_size], series.iloc[train_size:]
 
-    train_size = int(len(prophet_df) * 0.8)
-    train = prophet_df[:train_size]
-    test = prophet_df[train_size:]
-
-    model = Prophet(
-        yearly_seasonality=True,
-        changepoint_prior_scale=0.1,
-        seasonality_mode='multiplicative'
-    )
+    model = Prophet()
     model.fit(train)
 
-    future = test[['ds']].copy()
+    future = model.make_future_dataframe(periods=len(test))
     forecast = model.predict(future)
 
-    # Metrics
-    mae = mean_absolute_error(test['y'], forecast['yhat'])
-    rmse = np.sqrt(mean_squared_error(test['y'], forecast['yhat']))
-    r2 = r2_score(test['y'], forecast['yhat'])
+    forecast_eval = forecast[['ds', 'yhat', 'yhat_lower', 'yhat_upper']].set_index('ds')
+    test.set_index('ds', inplace=True)
+    aligned = forecast_eval.join(test, how='inner')
 
-    print("\n Evaluation Metrics:")
-    print(f"MAE  : {mae:.4f}")
-    print(f"RMSE : {rmse:.4f}")
-    print(f"R²   : {r2:.4f}")
+    mae = mean_absolute_error(aligned['y'], aligned['yhat'])
+    rmse = np.sqrt(mean_squared_error(aligned['y'], aligned['yhat']))
+    r2 = r2_score(aligned['y'], aligned['yhat'])
+    acc = calculate_accuracy(aligned['y'], aligned['yhat'])
 
-    # Plotting
-    plt.figure(figsize=(10, 5))
-    plt.plot(test['ds'], test['y'], label='Actual NAV')
-    plt.plot(test['ds'], forecast['yhat'], label='Predicted NAV (Prophet)', linestyle='--')
-    plt.fill_between(test['ds'], forecast['yhat_lower'], forecast['yhat_upper'], color='gray', alpha=0.2, label='Confidence Interval')
-    plt.title(f"Prophet Forecast - Scheme {scheme_code}")
-    plt.xlabel("Date")
-    plt.ylabel("NAV")
-    plt.legend()
-    plt.grid(True)
-    plt.tight_layout()
-    plt.show()
+    print(f"\nScheme_Code {scheme_code} → Accuracy: {acc:.2f}%, RMSE: {rmse:.4f}")
 
-    # Save predictions
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_dir = os.path.join(os.path.dirname(__file__), "..", "outputs", "models")
+    preds_df = aligned.reset_index()
+    preds_df.columns = ["Date", "Predicted_NAV", "Lower_CI", "Upper_CI", "Actual_NAV"]
     os.makedirs(output_dir, exist_ok=True)
+    preds_df.to_csv(os.path.join(output_dir, f"Prophet_preds_{scheme_code}_{timestamp}.csv"), index=False)
 
-    pred_df = pd.DataFrame({
-        "Date": test['ds'],
-        "Actual_NAV": test['y'],
-        "Predicted_NAV": forecast['yhat']
-    })
-    pred_file = f"Prophet_preds_{scheme_code}_{timestamp}.csv"
-    pred_path = os.path.join(output_dir, pred_file)
-    pred_df.to_csv(pred_path, index=False)
-    print(f" Predictions saved to: {pred_path}")
-
-    # Save to leaderboard
     leaderboard_path = os.path.join(output_dir, "model_leaderboard.csv")
-    leaderboard_entry = pd.DataFrame([{
+    entry = pd.DataFrame([{
         "Model": "Prophet",
         "Scheme_Code": scheme_code,
         "Timestamp": timestamp,
         "MAE": round(mae, 4),
         "RMSE": round(rmse, 4),
-        "R2": round(r2, 4)
+        "R2": round(r2, 4),
+        "Accuracy (%)": round(acc, 2)
     }])
     if os.path.exists(leaderboard_path):
-        existing = pd.read_csv(leaderboard_path)
-        updated = pd.concat([existing, leaderboard_entry], ignore_index=True)
+        current = pd.read_csv(leaderboard_path)
+        updated = pd.concat([current, entry], ignore_index=True)
     else:
-        updated = leaderboard_entry
+        updated = entry
     updated.to_csv(leaderboard_path, index=False)
-    print(f" Leaderboard updated: {leaderboard_path}")
 
-# =============================
-# CLI Entrypoint
-# =============================
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=preds_df["Date"], y=preds_df["Actual_NAV"], mode='lines', name='Actual NAV'))
+    fig.add_trace(go.Scatter(x=preds_df["Date"], y=preds_df["Predicted_NAV"], mode='lines', name='Predicted NAV'))
+    fig.add_trace(go.Scatter(x=preds_df["Date"], y=preds_df["Lower_CI"], mode='lines', name='Lower CI', line=dict(dash='dot'), opacity=0.3))
+    fig.add_trace(go.Scatter(x=preds_df["Date"], y=preds_df["Upper_CI"], mode='lines', name='Upper CI', line=dict(dash='dot'), opacity=0.3))
+
+    fig.update_layout(title=f"Prophet Forecast: Scheme {scheme_code}",
+                      xaxis_title='Date', yaxis_title='NAV',
+                      template='plotly_white')
+
+    html_path = os.path.join(output_dir, f"Prophet_plot_{scheme_code}_{timestamp}.html")
+    fig.write_html(html_path)
+    print(f" Interactive plot saved → {html_path}")
+
+def run_all():
+    df = load_data()
+    scheme_codes = load_top_scheme_codes()
+    for code in scheme_codes:
+        train_prophet(df, code)
+
 if __name__ == "__main__":
-    df = load_data()
-    scheme = select_scheme_code(df)
-    train_prophet(df, scheme)
-
-# Reusable API Method
-
-def train_and_save_prophet():
-    df = load_data()
-    scheme = select_scheme_code(df)
-    train_prophet(df, scheme)
+    run_all()

@@ -1,60 +1,40 @@
-# main.py – Full Project Runner: LSTM, ARIMA, Prophet, Clustering + Dashboard
+# main.py – Full Project Runner: LSTM, ARIMA, Prophet, Dashboard
 
 import os
 import pandas as pd
+from lstm_model import train_lstm, load_data, load_scheme_codes
+from arima_model import train_optimized_arima
+from prophet_model import train_prophet
 
-from lstm_model import train_and_save_model
-from arima_model import train_and_save_arima
-from prophet_model import train_and_save_prophet
-from clustering_model import run_kmeans_clustering, plot_elbow_curve, plot_cluster_summary
-
-
-def load_data():
-    """Load preprocessed mutual fund data"""
-    df = pd.read_csv("data/processed/preprocessed_mutual_funds.csv")
-    return df
-
-
-def get_best_scheme():
-    """Automatically select a valid Scheme_Code with enough data"""
+def run_all_models():
+    """Run LSTM, ARIMA, and Prophet models on top 5 scheme codes"""
     df = load_data()
-    scheme_counts = df['Scheme_Code'].value_counts()
-    best = scheme_counts[scheme_counts > 100].index[0]
-    print(f"\n Selected Scheme_Code: {best} with {scheme_counts[best]} entries")
-    return best
+    scheme_codes = load_scheme_codes()
+    output_dir = "outputs/models"
 
+    # ARIMA configuration
+    p_values = [0, 1, 2, 4, 6]
+    d_values = range(0, 3)
+    q_values = range(0, 3)
 
-def run_all_models(scheme_code):
-    """Run LSTM, ARIMA, Prophet, and Clustering models"""
-    df = load_data()
+    for code in scheme_codes:
+        print(f"\n Running models for Scheme_Code: {code}")
 
-    print("\n🔁 Training LSTM model...")
-    train_and_save_model(scheme_code)  # assuming your LSTM takes scheme_code
+        print("→ LSTM:")
+        train_lstm(df, code)
 
-    print("\n🔁 Training ARIMA model...")
-    train_and_save_arima()  # assuming ARIMA handles its own data loading
+        print("\n Training ARIMA model...")
+        train_optimized_arima(df, code, output_dir, p_values, d_values, q_values)
 
-    print("\n🔁 Training Prophet model...")
-    train_and_save_prophet()  # same assumption
-
-    # print("\n🔍 Running K-Means Clustering for fund profiles...")
-    # clustered_df, kmeans_model = run_kmeans_clustering()
-
-    # print("\n📊 Cluster Summary:")
-    # plot_cluster_summary(clustered_df)
-
+        print("→ Prophet:")
+        train_prophet(df, code, output_dir)
 
 def launch_dashboard():
     """Launch the Streamlit dashboard"""
-    print("\n🚀 Launching Streamlit Dashboard...")
+    print("\n Launching Streamlit Dashboard...")
     os.system("streamlit run src/app.py")
 
-
 if __name__ == "__main__":
-    print("Starting Mutual Fund Recommender Pipeline")
-
-    scheme_code = get_best_scheme()
-
-    run_all_models(scheme_code)
-
+    print(" Starting Mutual Fund Recommender System Pipeline")
+    run_all_models()
     launch_dashboard()

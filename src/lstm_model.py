@@ -1,135 +1,142 @@
-# lstm_model.py 
-
+# lstm_model.py
 import os
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
+import plotly.graph_objs as go
 from datetime import datetime
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
-from keras.models import Sequential
-from keras.layers import LSTM, Dense
-from keras.callbacks import EarlyStopping
-from lstm_utils import preprocess_data
+from sklearn.preprocessing import MinMaxScaler
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dense
+from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
+import warnings
+
+warnings.filterwarnings("ignore")
 
 # =============================
-# Class-Based LSTM Forecaster
-# =============================
-class LSTMForecaster:
-    def __init__(self, input_shape, units=50):
-        self.model = Sequential()
-        self.model.add(LSTM(units=units, input_shape=input_shape))
-        self.model.add(Dense(units=1))
-        self.model.compile(optimizer='adam', loss='mean_squared_error')
-
-    def train(self, X_train, y_train, epochs=30, batch_size=32):
-        early_stop = EarlyStopping(monitor='loss', patience=5, restore_best_weights=True)
-        self.model.fit(X_train, y_train, epochs=epochs, batch_size=batch_size, callbacks=[early_stop], verbose=1)
-
-    def predict(self, X_test):
-        return self.model.predict(X_test)
-
-    def save_model(self, path):
-        self.model.save(path)
-
-# =============================
-# Visualization
-# =============================
-def plot_predictions(actual, predicted, scheme_code):
-    plt.figure(figsize=(10, 4))
-    plt.plot(actual, label='Actual NAV')
-    plt.plot(predicted, label='Predicted NAV')
-    plt.title(f"LSTM NAV Prediction - Scheme {scheme_code}")
-    plt.xlabel("Time Steps")
-    plt.ylabel("NAV")
-    plt.legend()
-    plt.grid(True)
-    plt.tight_layout()
-    plt.show()
-
-# =============================
-# Legacy-Compatible Runner
+# Utility Functions
 # =============================
 def load_data():
-    df = pd.read_csv("data/processed/preprocessed_mutual_funds.csv")
-    return df
+    return pd.read_csv("data/processed/preprocessed_mutual_funds.csv")
 
-def get_best_scheme_code(df):
-    scheme_counts = df['Scheme_Code'].value_counts()
-    best = scheme_counts[scheme_counts > 100].index[0]
-    print(f" Using Scheme_Code: {best} with {scheme_counts[best]} entries")
-    return best
+def load_scheme_codes():
+    return pd.read_csv("data/processed/top5_scheme_summary.csv")["Scheme_Code"].unique().tolist()
 
-def train_and_save_model(scheme_code):
-    df = load_data()
+def calculate_accuracy(actual, predicted):
+    actual = np.array(actual)
+    predicted = np.array(predicted)
+    mape = np.mean(np.abs((actual - predicted) / actual)) * 100
+    return 100 - mape
 
-    try:
-        X_train, X_test, y_train, y_test, scaler, train_dates, test_dates = preprocess_data(df, scheme_code=scheme_code, return_dates=True)
-    except ValueError as e:
-        print(f" Error: {e}")
-        return
+# =============================
+# LSTM Trainer
+# =============================
+def train_lstm(df, scheme_code):
+    df = df[df['Scheme_Code'] == scheme_code].copy()
+    df['Date'] = pd.to_datetime(df['Date'])
+    df.sort_values('Date', inplace=True)
 
-    # Use class-based model
-    lstm_model = LSTMForecaster(input_shape=(X_train.shape[1], 1))
-    lstm_model.train(X_train, y_train)
+    series = df[['Date', 'NAV']].dropna().copy()
+    series.set_index('Date', inplace=True)
 
-    predictions = lstm_model.predict(X_test)
-    predicted_nav = scaler.inverse_transform(predictions)
-    actual_nav = scaler.inverse_transform(y_test.reshape(-1, 1))
+    scaler = MinMaxScaler()
+    series_scaled = scaler.fit_transform(series)
 
-    # Metrics
-    mae = mean_absolute_error(actual_nav, predicted_nav)
-    rmse = np.sqrt(mean_squared_error(actual_nav, predicted_nav))
-    r2 = r2_score(actual_nav, predicted_nav)
+    def create_dataset(data, look_back=5):
+        X, y = [], []
+        for i in range(len(data) - look_back):
+            X.append(data[i:i+look_back, 0])
+            y.append(data[i+look_back, 0])
+        return np.array(X), np.array(y)
+
+    look_back = 5
+    X, y = create_dataset(series_scaled, look_back)
+    X = X.reshape((X.shape[0], X.shape[1], 1))
+
+    train_size = int(len(X) * 0.8)
+    X_train, X_test = X[:train_size], X[train_size:]
+    y_train, y_test = y[:train_size], y[train_size:]
+
+    model = Sequential([
+        LSTM(50, input_shape=(look_back, 1)),
+        Dense(1)
+    ])
+    model.compile(optimizer='adam', loss='mse')
+
+    checkpoint_path = f"outputs/models/best_lstm_{scheme_code}.h5"
+    callbacks = [
+        EarlyStopping(patience=5, restore_best_weights=True),
+        ModelCheckpoint(filepath=checkpoint_path, save_best_only=True, verbose=0)
+    ]
+
+    print(f"Training LSTM for Scheme_Code {scheme_code}...")
+    model.fit(X_train, y_train, epochs=50, batch_size=32,
+              validation_data=(X_test, y_test), callbacks=callbacks, verbose=0)
+
+    y_pred_scaled = model.predict(X_test)
+    y_pred = scaler.inverse_transform(np.concatenate([y_pred_scaled, np.zeros((len(y_pred_scaled), 0))], axis=1))[:, 0]
+    y_test_actual = scaler.inverse_transform(np.concatenate([y_test.reshape(-1, 1), np.zeros((len(y_test), 0))], axis=1))[:, 0]
+
+    mae = mean_absolute_error(y_test_actual, y_pred)
+    rmse = np.sqrt(mean_squared_error(y_test_actual, y_pred))
+    r2 = r2_score(y_test_actual, y_pred)
+    acc = calculate_accuracy(y_test_actual, y_pred)
 
     print("\n Evaluation Metrics:")
-    print(f"MAE  : {mae:.4f}")
-    print(f"RMSE : {rmse:.4f}")
-    print(f"R²   : {r2:.4f}")
+    print(f"MAE         : {mae:.4f}")
+    print(f"RMSE        : {rmse:.4f}")
+    print(f"R² Score    : {r2:.4f}")
+    print(f"Accuracy(%) : {acc:.2f}")
 
-    # Save model
-    output_dir = os.path.join(os.path.dirname(__file__), "..", "outputs", "models")
-    os.makedirs(output_dir, exist_ok=True)
+    # Save interactive HTML plot
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    model_filename = f"LSTM_scheme_{scheme_code}_{timestamp}.h5"
-    model_path = os.path.join(output_dir, model_filename)
-    lstm_model.save_model(model_path)
-    print(f" Model trained and saved to: {model_path}")
+    output_dir = os.path.join("outputs", "models")
+    os.makedirs(output_dir, exist_ok=True)
 
-    # Save predictions
-    predictions_df = pd.DataFrame({
+    test_dates = series.index[-len(y_test_actual):]
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=test_dates, y=y_test_actual, name='Actual NAV'))
+    fig.add_trace(go.Scatter(x=test_dates, y=y_pred, name='Predicted NAV', line=dict(dash='dash')))
+    fig.add_trace(go.Scatter(x=test_dates, y=y_pred - rmse, mode='lines', name='Lower CI'))
+    fig.add_trace(go.Scatter(x=test_dates, y=y_pred + rmse, mode='lines', name='Upper CI', fill='tonexty', fillcolor='rgba(0,100,80,0.2)'))
+    fig.update_layout(title=f"LSTM Forecast - Scheme {scheme_code}", xaxis_title="Date", yaxis_title="NAV")
+    plot_path = os.path.join(output_dir, f"LSTM_plot_{scheme_code}_{timestamp}.html")
+    fig.write_html(plot_path)
+    print(f"Interactive plot saved → {plot_path}")
+
+    # Save CSV
+    pd.DataFrame({
         "Date": test_dates,
-        "Actual_NAV": actual_nav.flatten(),
-        "Predicted_NAV": predicted_nav.flatten()
-    })
-    predictions_filename = f"{scheme_code}_LSTM_preds.csv"
-    predictions_path = os.path.join(output_dir, predictions_filename)
-    predictions_df.to_csv(predictions_path, index=False)
-    print(f" Predictions saved to: {predictions_path}")
+        "Actual_NAV": y_test_actual,
+        "Predicted_NAV": y_pred,
+        "Lower_CI": y_pred - rmse,
+        "Upper_CI": y_pred + rmse
+    }).to_csv(os.path.join(output_dir, f"LSTM_preds_{scheme_code}_{timestamp}.csv"), index=False)
 
-    # Leaderboard update
+    # Update Leaderboard
     leaderboard_path = os.path.join(output_dir, "model_leaderboard.csv")
-    leaderboard_entry = pd.DataFrame([{
+    entry = pd.DataFrame([{
         "Model": "LSTM",
         "Scheme_Code": scheme_code,
         "Timestamp": timestamp,
         "MAE": round(mae, 4),
         "RMSE": round(rmse, 4),
-        "R2": round(r2, 4)
+        "R2": round(r2, 4),
+        "Accuracy (%)": round(acc, 2)
     }])
-
     if os.path.exists(leaderboard_path):
-        existing_df = pd.read_csv(leaderboard_path)
-        updated_df = pd.concat([existing_df, leaderboard_entry], ignore_index=True)
+        current = pd.read_csv(leaderboard_path)
+        updated = pd.concat([current, entry], ignore_index=True)
     else:
-        updated_df = leaderboard_entry
+        updated = entry
+    updated.to_csv(leaderboard_path, index=False)
+    print(f"Leaderboard updated → {leaderboard_path}")
 
-    updated_df.to_csv(leaderboard_path, index=False)
-    print(f" Leaderboard updated: {leaderboard_path}")
-
-    plot_predictions(actual_nav, predicted_nav, scheme_code)
-
-# Standalone script entry
+# =============================
+# CLI Entrypoint
+# =============================
 if __name__ == "__main__":
     df = load_data()
-    scheme_code = get_best_scheme_code(df)
-    train_and_save_model(scheme_code)
+    scheme_codes = load_scheme_codes()
+    for code in scheme_codes:
+        train_lstm(df, code)
