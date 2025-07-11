@@ -204,8 +204,8 @@ Thumbs.db
 *.parquet
 
 # ✅ Data files (keep raw/large out of Git)
-data/raw/
-data/processed/
+app/data/raw/
+app/data/processed/
 
 # ✅ Environment & dependency files
 *.env

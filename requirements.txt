@@ -1,0 +1,26 @@
+# Core Python libraries
+pandas==2.2.2
+numpy==1.26.4
+scikit-learn==1.5.0
+matplotlib==3.8.4
+seaborn==0.13.2
+
+# Forecasting Models
+statsmodels==0.14.2
+pmdarima==2.0.4
+prophet==1.1.5  # Rename 'fbprophet' to 'prophet' if using newer versions
+tensorflow==2.16.1
+
+# Interactive Plots
+plotly==5.22.0
+
+# Web App & Backend
+fastapi==0.111.0
+uvicorn==0.30.1
+
+# Jupyter (optional but helpful)
+jupyterlab==4.2.1
+ipykernel==6.29.4
+
+# File and OS utilities
+python-dotenv==1.0.1

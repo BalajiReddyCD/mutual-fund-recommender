@@ -1,142 +1,131 @@
-# lstm_model.py
-import os
+# LSTM for NAV Forecasting
+# LSTM (Long Short-Term Memory) is a deep learning model perfect for:
+# Capturing complex patterns in sequences
+# Handling longer dependencies in time series
+# LSTM Forecasting Plan
+# Prepare NAV time series for each Scheme_Code
+
+# Normalize NAV values
+# Create sliding window sequences
+# Build & train LSTM model
+# Forecast next n NAV values
+# Plot using Plotly
+# Evaluate (MAE, RMSE, R²)
+# Store in leaderboard
+
+# LSTM +  Plotly Forecasting (for Top 3 Funds)
+# Assumptions:
+# Forecast next 30 days
+# Use 50-day lookback window
+
+# Process top 3 Scheme_Codes: [100051, 100047, 100048]
+
 import pandas as pd
 import numpy as np
-import plotly.graph_objs as go
-from datetime import datetime
-from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+import tensorflow as tf
 from sklearn.preprocessing import MinMaxScaler
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import LSTM, Dense
-from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+import plotly.graph_objects as go
 import warnings
 
-warnings.filterwarnings("ignore")
+df = pd.read_csv(r"C:/Users/BALA/OneDrive - University of Hertfordshire/Desktop/final project/app/data/processed/preprocessed_mutual_funds.csv")
 
-# =============================
-# Utility Functions
-# =============================
-def load_data():
-    return pd.read_csv("data/processed/preprocessed_mutual_funds.csv")
 
-def load_scheme_codes():
-    return pd.read_csv("data/processed/top5_scheme_summary.csv")["Scheme_Code"].unique().tolist()
+warnings.filterwarnings("ignore", category=FutureWarning)
 
-def calculate_accuracy(actual, predicted):
-    actual = np.array(actual)
-    predicted = np.array(predicted)
-    mape = np.mean(np.abs((actual - predicted) / actual)) * 100
-    return 100 - mape
+# Parameters
+top_scheme_codes = [100051, 100047, 100048]
+lookback = 50
+forecast_days = 30
+lstm_results = []
 
-# =============================
-# LSTM Trainer
-# =============================
-def train_lstm(df, scheme_code):
-    df = df[df['Scheme_Code'] == scheme_code].copy()
-    df['Date'] = pd.to_datetime(df['Date'])
-    df.sort_values('Date', inplace=True)
+def create_sequences(data, lookback):
+    X, y = [], []
+    for i in range(len(data) - lookback):
+        X.append(data[i:i + lookback])
+        y.append(data[i + lookback])
+    return np.array(X), np.array(y)
 
-    series = df[['Date', 'NAV']].dropna().copy()
-    series.set_index('Date', inplace=True)
+# Loop through each scheme
+for code in top_scheme_codes:
+    fund = df[df['Scheme_Code'] == code][['Date', 'NAV']].sort_values('Date')
+    fund['Date'] = pd.to_datetime(fund['Date'])
+    
+    if len(fund) < (lookback + forecast_days + 10):
+        print(f"Skipping {code} due to insufficient data.")
+        continue
 
+    fund.set_index('Date', inplace=True)
     scaler = MinMaxScaler()
-    series_scaled = scaler.fit_transform(series)
+    scaled_nav = scaler.fit_transform(fund[['NAV']])
 
-    def create_dataset(data, look_back=5):
-        X, y = [], []
-        for i in range(len(data) - look_back):
-            X.append(data[i:i+look_back, 0])
-            y.append(data[i+look_back, 0])
-        return np.array(X), np.array(y)
+    # Split train/test
+    train_size = int(len(scaled_nav) * 0.8)
+    train, test = scaled_nav[:train_size], scaled_nav[train_size - lookback:]
 
-    look_back = 5
-    X, y = create_dataset(series_scaled, look_back)
-    X = X.reshape((X.shape[0], X.shape[1], 1))
+    # Create sequences
+    X_train, y_train = create_sequences(train, lookback)
+    X_test, y_test = create_sequences(test, lookback)
 
-    train_size = int(len(X) * 0.8)
-    X_train, X_test = X[:train_size], X[train_size:]
-    y_train, y_test = y[:train_size], y[train_size:]
+    # Reshape for LSTM input
+    X_train = X_train.reshape((X_train.shape[0], X_train.shape[1], 1))
+    X_test = X_test.reshape((X_test.shape[0], X_test.shape[1], 1))
 
-    model = Sequential([
-        LSTM(50, input_shape=(look_back, 1)),
-        Dense(1)
+    # Build LSTM
+    model = tf.keras.Sequential([
+        tf.keras.layers.LSTM(64, return_sequences=True, input_shape=(lookback, 1)),
+        tf.keras.layers.LSTM(32),
+        tf.keras.layers.Dense(1)
     ])
     model.compile(optimizer='adam', loss='mse')
+    model.fit(X_train, y_train, epochs=25, batch_size=16, verbose=0)
 
-    checkpoint_path = f"outputs/models/best_lstm_{scheme_code}.h5"
-    callbacks = [
-        EarlyStopping(patience=5, restore_best_weights=True),
-        ModelCheckpoint(filepath=checkpoint_path, save_best_only=True, verbose=0)
-    ]
+    # Predict on test
+    preds = model.predict(X_test).flatten()
+    y_test_inv = scaler.inverse_transform(y_test.reshape(-1, 1)).flatten()
+    preds_inv = scaler.inverse_transform(preds.reshape(-1, 1)).flatten()
 
-    print(f"Training LSTM for Scheme_Code {scheme_code}...")
-    model.fit(X_train, y_train, epochs=50, batch_size=32,
-              validation_data=(X_test, y_test), callbacks=callbacks, verbose=0)
+    # Forecast future NAV
+    last_window = scaled_nav[-lookback:]
+    future_preds = []
+    input_seq = last_window.reshape(1, lookback, 1)
+    for _ in range(forecast_days):
+        next_pred = model.predict(input_seq, verbose=0)[0][0]
+        future_preds.append(next_pred)
+        input_seq = np.append(input_seq[:, 1:, :], [[[next_pred]]], axis=1)
 
-    y_pred_scaled = model.predict(X_test)
-    y_pred = scaler.inverse_transform(np.concatenate([y_pred_scaled, np.zeros((len(y_pred_scaled), 0))], axis=1))[:, 0]
-    y_test_actual = scaler.inverse_transform(np.concatenate([y_test.reshape(-1, 1), np.zeros((len(y_test), 0))], axis=1))[:, 0]
+    future_dates = pd.date_range(fund.index[-1] + pd.Timedelta(days=1), periods=forecast_days, freq='B')
+    forecast_nav = scaler.inverse_transform(np.array(future_preds).reshape(-1, 1)).flatten()
 
-    mae = mean_absolute_error(y_test_actual, y_pred)
-    rmse = np.sqrt(mean_squared_error(y_test_actual, y_pred))
-    r2 = r2_score(y_test_actual, y_pred)
-    acc = calculate_accuracy(y_test_actual, y_pred)
+    # Evaluation
+    mae = mean_absolute_error(y_test_inv, preds_inv)
+    rmse = np.sqrt(mean_squared_error(y_test_inv, preds_inv))
+    r2 = r2_score(y_test_inv, preds_inv)
 
-    print("\n Evaluation Metrics:")
-    print(f"MAE         : {mae:.4f}")
-    print(f"RMSE        : {rmse:.4f}")
-    print(f"R² Score    : {r2:.4f}")
-    print(f"Accuracy(%) : {acc:.2f}")
+    lstm_results.append({
+        'Scheme_Code': code,
+        'Fund_Name': df[df['Scheme_Code'] == code]['Scheme_Name'].iloc[0],
+        'MAE': round(mae, 2),
+        'RMSE': round(rmse, 2),
+        'R2_Score': round(r2, 3)
+    })
 
-    # Save interactive HTML plot
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_dir = os.path.join("outputs", "models")
-    os.makedirs(output_dir, exist_ok=True)
-
-    test_dates = series.index[-len(y_test_actual):]
+    # Plotly Chart
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=test_dates, y=y_test_actual, name='Actual NAV'))
-    fig.add_trace(go.Scatter(x=test_dates, y=y_pred, name='Predicted NAV', line=dict(dash='dash')))
-    fig.add_trace(go.Scatter(x=test_dates, y=y_pred - rmse, mode='lines', name='Lower CI'))
-    fig.add_trace(go.Scatter(x=test_dates, y=y_pred + rmse, mode='lines', name='Upper CI', fill='tonexty', fillcolor='rgba(0,100,80,0.2)'))
-    fig.update_layout(title=f"LSTM Forecast - Scheme {scheme_code}", xaxis_title="Date", yaxis_title="NAV")
-    plot_path = os.path.join(output_dir, f"LSTM_plot_{scheme_code}_{timestamp}.html")
-    fig.write_html(plot_path)
-    print(f"Interactive plot saved → {plot_path}")
+    fig.add_trace(go.Scatter(x=fund.index, y=fund['NAV'], mode='lines', name='Historical NAV'))
+    fig.add_trace(go.Scatter(x=future_dates, y=forecast_nav, mode='lines+markers', name='LSTM Forecast'))
+    fig.update_layout(
+        title=f"LSTM NAV Forecast – Scheme Code {code}",
+        xaxis_title="Date", yaxis_title="NAV",
+        template="plotly_dark", height=500
+    )
+    fig.show()
 
-    # Save CSV
-    pd.DataFrame({
-        "Date": test_dates,
-        "Actual_NAV": y_test_actual,
-        "Predicted_NAV": y_pred,
-        "Lower_CI": y_pred - rmse,
-        "Upper_CI": y_pred + rmse
-    }).to_csv(os.path.join(output_dir, f"LSTM_preds_{scheme_code}_{timestamp}.csv"), index=False)
+# Show leaderboard
+leaderboard_lstm = pd.DataFrame(lstm_results).sort_values(by='RMSE')
+print("LSTM Forecast Leaderboard:")
+print(leaderboard_lstm)
 
-    # Update Leaderboard
-    leaderboard_path = os.path.join(output_dir, "model_leaderboard.csv")
-    entry = pd.DataFrame([{
-        "Model": "LSTM",
-        "Scheme_Code": scheme_code,
-        "Timestamp": timestamp,
-        "MAE": round(mae, 4),
-        "RMSE": round(rmse, 4),
-        "R2": round(r2, 4),
-        "Accuracy (%)": round(acc, 2)
-    }])
-    if os.path.exists(leaderboard_path):
-        current = pd.read_csv(leaderboard_path)
-        updated = pd.concat([current, entry], ignore_index=True)
-    else:
-        updated = entry
-    updated.to_csv(leaderboard_path, index=False)
-    print(f"Leaderboard updated → {leaderboard_path}")
-
-# =============================
-# CLI Entrypoint
-# =============================
-if __name__ == "__main__":
-    df = load_data()
-    scheme_codes = load_scheme_codes()
-    for code in scheme_codes:
-        train_lstm(df, code)
+os.makedirs('data/results', exist_ok=True)
+leaderboard_lstm.to_csv('C:/Users/BALA/OneDrive - University of Hertfordshire/Desktop/final project/app/data/results/lstm_leaderboard.csv', index=False)
+print("LSTM leaderboard saved to data/results/lstm_leaderboard.csv")
