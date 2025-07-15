@@ -26,9 +26,11 @@ import tensorflow as tf
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 import plotly.graph_objects as go
+import os
+
 import warnings
 
-df = pd.read_csv(r"C:/Users/BALA/OneDrive - University of Hertfordshire/Desktop/final project/app/data/processed/preprocessed_mutual_funds.csv")
+df = pd.read_csv(r"C:/Users/BALA/OneDrive - University of Hertfordshire/Desktop/mutual-fund-recommender/app/data/processed/preprocessed_mutual_funds.csv")
 
 
 warnings.filterwarnings("ignore", category=FutureWarning)
@@ -127,5 +129,5 @@ print("LSTM Forecast Leaderboard:")
 print(leaderboard_lstm)
 
 os.makedirs('data/results', exist_ok=True)
-leaderboard_lstm.to_csv('C:/Users/BALA/OneDrive - University of Hertfordshire/Desktop/final project/app/data/results/lstm_leaderboard.csv', index=False)
+leaderboard_lstm.to_csv('C:/Users/BALA/OneDrive - University of Hertfordshire/Desktop/mutual-fund-recommender/app/data/results/lstm_leaderboard.csv', index=False)
 print("LSTM leaderboard saved to data/results/lstm_leaderboard.csv")

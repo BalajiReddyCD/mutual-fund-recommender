@@ -5,12 +5,13 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
 from sklearn.impute import SimpleImputer
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import classification_report, confusion_matrix, roc_auc_score# Step 1: Create Binary Target Label from CAGR
+from sklearn.metrics import classification_report, confusion_matrix, roc_auc_score
+# Step 1: Create Binary Target Label from CAGR
 # Let’s add a new Performance_Label:
 # 1 if fund's CAGR is in the top 25%
 # 0 otherwise
 
-df = pd.read_csv(r"C:/Users/BALA/OneDrive - University of Hertfordshire/Desktop/final project/app/data/processed/preprocessed_mutual_funds.csv")
+df = pd.read_csv(r"C:/Users/BALA/OneDrive - University of Hertfordshire/Desktop/mutual-fund-recommender/app/data/processed/preprocessed_mutual_funds.csv")
 # Calculate the 75th percentile threshold for CAGR
 cagr_threshold = df['CAGR'].quantile(0.75)
 

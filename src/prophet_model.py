@@ -13,7 +13,7 @@ import os
 from prophet import Prophet
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
-df = pd.read_csv(r"C:/Users/BALA/OneDrive - University of Hertfordshire/Desktop/final project/app/data/processed/preprocessed_mutual_funds.csv")
+df = pd.read_csv(r"C:/Users/BALA/OneDrive - University of Hertfordshire/Desktop/mutual-fund-recommender/app/data/processed/preprocessed_mutual_funds.csv")
 
 
 # Top scheme codes (based on earlier analysis)
@@ -95,5 +95,5 @@ print(" Prophet Forecast Leaderboard:")
 print(leaderboard_prophet)
 
 os.makedirs('data/results', exist_ok=True)
-leaderboard_prophet.to_csv('C:/Users/BALA/OneDrive - University of Hertfordshire/Desktop/final project/app/data/results/prophet_leaderboard.csv', index=False)
+leaderboard_prophet.to_csv('C:/Users/BALA/OneDrive - University of Hertfordshire/Desktop/mutual-fund-recommender/app/data/results/prophet_leaderboard.csv', index=False)
 print("Prophet leaderboard saved to data/results/prophet_leaderboard.csv")

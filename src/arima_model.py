@@ -9,7 +9,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-df = pd.read_csv(r"C:/Users/BALA/OneDrive - University of Hertfordshire/Desktop/final project/app/data/processed/preprocessed_mutual_funds.csv")
+df = pd.read_csv(r"C:/Users/BALA/OneDrive - University of Hertfordshire/Desktop/mutual-fund-recommender/app/data/processed/preprocessed_mutual_funds.csv")
 
 # Identify top 3 Scheme_Codes by record count
 top_scheme_codes = df['Scheme_Code'].value_counts().head(3).index.tolist()
@@ -97,5 +97,5 @@ print(leaderboard_df)
 
 # Save to CSV
 os.makedirs('data/results', exist_ok=True)
-leaderboard_df.to_csv('C:/Users/BALA/OneDrive - University of Hertfordshire/Desktop/final project/app/data/results/arima_leaderboard.csv', index=False)
+leaderboard_df.to_csv('C:/Users/BALA/OneDrive - University of Hertfordshire/Desktop/mutual-fund-recommender/app/data/results/arima_leaderboard.csv', index=False)
 print("ARIMA leaderboard saved to data/results/arima_leaderboard.csv")
